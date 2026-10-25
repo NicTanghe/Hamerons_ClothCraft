@@ -331,3 +331,104 @@ fn asymmetric_pom_stations_reverse_direction_when_mirroring_the_cutline() {
         "mirroring may not silently move an asymmetrically anchored POM");
     reflected.compile().unwrap();
 }
+
+// Regression cases extracted from the independent issue #13 visual probes.
+// Keep these CPU-only and independent of the local HTML/reporting harness.
+mod sewing_chain_reference_regressions {
+    use super::*;
+    use marvelous_cloth::garment::seam::{BoundaryRef, SeamSpec, Side};
+
+    fn chain(edge_one_on_b_tail: bool) -> GarmentTemplate {
+        let mut source = fixture();
+        let panel = source.panels[0].id.clone();
+        let boundary = |edge: &str| BoundaryRef {
+            panel: panel.clone(),
+            edge: Some(edge.into()),
+            side: Side::Top,
+            range: [0.0, 1.0],
+            reversed: false,
+        };
+        let (a_tail, b_tail) = if edge_one_on_b_tail {
+            ("edge_3", "edge_1")
+        } else {
+            ("edge_1", "edge_3")
+        };
+        source.seams.push(SeamSpec {
+            id: "protected_chain".into(),
+            a: boundary("edge_4"),
+            a_tail: vec![boundary(a_tail)],
+            b: boundary("edge_2"),
+            b_tail: vec![boundary(b_tail)],
+            reverse_b: true,
+            notches: vec![],
+            stiffness: 50_000.0,
+            allow_ease: true,
+        });
+        source.compile().expect("the initial sewing chain is valid");
+        source
+    }
+
+    fn assert_dart_refused(edge_one_on_b_tail: bool) {
+        for trimmed_and_reversed in [false, true] {
+            let mut source = chain(edge_one_on_b_tail);
+            if trimmed_and_reversed {
+                let seam = &mut source.seams[0];
+                let reference = if edge_one_on_b_tail {
+                    &mut seam.b_tail[0]
+                } else {
+                    &mut seam.a_tail[0]
+                };
+                reference.range = [0.15, 0.85];
+                reference.reversed = true;
+            }
+            source.compile().unwrap();
+            let before = serde_json::to_vec(&source).unwrap();
+            let error = authoring::apply(
+                &source,
+                Command::DartCutSew {
+                    panel: source.panels[0].id.clone(),
+                    edge: "edge_1".into(),
+                    left_t: 0.35,
+                    right_t: 0.45,
+                    apex: DVec2::new(0.16, 0.08),
+                },
+            )
+            .err()
+            .expect("a dart must refuse a sewn chain tail, just as it refuses a sewn head");
+            assert!(error.contains("already sewn"), "{error}");
+            assert_eq!(serde_json::to_vec(&source).unwrap(), before);
+            source.compile().unwrap();
+        }
+    }
+
+    #[test]
+    fn sewing_chain_tail_split_rejects_without_changing_the_pom() {
+        let source = set(&chain(false), measurement("edge_1", 0.75, "edge_3", 0.25));
+        let before = serde_json::to_vec(&source).unwrap();
+        let initial_sewing_length = source.compile().unwrap().seams[0].measure();
+        assert!((initial_sewing_length - 0.7).abs() < 1e-12);
+        let error = authoring::apply(
+            &source,
+            Command::SplitBoundary {
+                panel: source.panels[0].id.clone(),
+                edge: "edge_1".into(),
+                at_m: 0.2,
+            },
+        )
+        .err()
+        .expect("unsupported chain migration must reject instead of shortening 700 mm to 500 mm");
+        assert!(error.contains("chain migration"), "{error}");
+        assert_eq!(serde_json::to_vec(&source).unwrap(), before);
+        assert!((source.compile().unwrap().seams[0].measure() - 0.7).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dart_refuses_a_tail_on_sewing_side_a() {
+        assert_dart_refused(false);
+    }
+
+    #[test]
+    fn dart_refuses_a_tail_on_sewing_side_b() {
+        assert_dart_refused(true);
+    }
+}

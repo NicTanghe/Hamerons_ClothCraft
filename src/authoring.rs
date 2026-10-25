@@ -912,6 +912,14 @@ fn remap_split_seams(template: &GarmentTemplate, panel: &str, edge: &str,
 {
     let mut out = Vec::new();
     for original in &template.seams {
+        // A chain requires migration of its entire ordered material path.
+        // The single-edge migration below cannot preserve that contract.
+        if (!original.a_tail.is_empty() || !original.b_tail.is_empty())
+            && original.references().any(|r|
+                r.panel == panel && r.edge.as_deref() == Some(edge))
+        {
+            return Err("Splitting a boundary in a multi-edge seam requires explicit chain migration; remove the seam first".into());
+        }
         let on_a = original.a.panel == panel && original.a.edge.as_deref() == Some(edge);
         let on_b = original.b.panel == panel && original.b.edge.as_deref() == Some(edge);
         if !on_a && !on_b {
@@ -1627,8 +1635,8 @@ pub fn apply(source: &GarmentTemplate, command: Command) -> Result<Edit, String>
                 || left_t <= 0.01 || right_t >= 0.99 || right_t-left_t < 0.005
                 || !apex.is_finite()
             {return Err("Dart requires two distinct interior edge stations and a finite apex".into())}
-            if template.seams.iter().any(|s| [ &s.a, &s.b ].iter()
-                .any(|r| r.panel==panel && r.edge.as_deref()==Some(edge.as_str()))) {
+            // Include every trimmed/reversed chain segment on both sides.
+            if seam_uses(&template, &panel, &edge) {
                 return Err("Dart placement on an already sewn edge is not supported; select an unsewn boundary".into());
             }
             let p=template.panels.iter_mut().find(|p|p.id==panel).ok_or("Dart panel not found")?;
