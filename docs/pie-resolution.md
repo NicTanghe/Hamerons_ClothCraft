@@ -9,13 +9,63 @@ Estimation of Optimal Cloth Mesh Resolution*, SIGGRAPH 2025,
 [DOI 10.1145/3721238.3730619](https://doi.org/10.1145/3721238.3730619).
 The [full paper](https://wanghmin.github.io/publication/zhang-2025-pie/Zhang-2025-PIE.pdf)
 was read, including equations and figures in sections 3--4 and Table 1.
-It is a research tool, not an editor backend, automatic physical calibration,
-full reproduction of the paper's simulator, or proof of optimal resolution.
+It now includes opt-in static mesh preparation for the native simulator. It is
+not a new solver backend, automatic physical calibration, a full reproduction
+of the paper's simulator, or proof of optimal resolution.
 
-## Run
+## Run a simulation example
+
+Generate the native project, then open it in the existing workspace:
 
 ```sh
-cargo run --locked --no-default-features -j 2 --example pie_resolution -- --compare
+cargo run --locked --no-default-features -j 2 --example pie_resolution -- \
+  --simulation-demo output/pie-simulation/fitting-project.json
+cargo run --locked -j 2 --bin cloth-fit -- \
+  --project output/pie-simulation/fitting-project.json --steps 0 --view \
+  --output output/pie-simulation-view
+```
+
+Press **Simulate**. The original example has a 260 mm skirt waist sewn to a
+130 mm pinned waistband using the existing eased sewing objective. The panels
+start outside the avatar. Its mesh is prepared before the first step and stays
+fixed for the run. This is a small functional example, not a calibrated garment
+or a validated wrinkle benchmark. The native window uses graphics hardware for
+rendering; the default solver remains CPU unless GPU compute is explicitly set.
+
+In **Properties > Simulation > Prepare mesh before simulation**, enter explicit
+warp/weft Young's modulus estimates in Pa, a boundary/base spacing ratio and a
+transition distance in mm. Choose one selected polygon or all polygons, then
+click **Prepare mesh and reset**. This compiles a new rest mesh and resets the
+cloth arrangement; it adds one history entry. Invalid input or failed compile
+preserves the existing garment. **Use uniform mesh and reset** clears the plan.
+Pause simulation and finish/cancel unfinished edits before preparing.
+
+The estimated base spacings use each panel's fabric bending properties and
+grain, rebound whenever it compiles. A boundary band refines all closed rims
+and internal sewing paths with the requested ratio; this is an explicit
+geometric choice, not automatic recognition of shirring or collision regions.
+The normal compiler constructs masses, material terms, hinges, seam quadrature,
+pins and arrangement. Ordinary save/open and mesh signatures include the
+optional plan. Legacy settings omit it and retain the old meshing path. Reset
+rebuilds deterministically; starting or continuing solver steps does not call
+this mesher. No live topology adaptation or draped-state transfer was added.
+Frozen or pinned configurations that cannot survive a new mesh fail explicitly
+through existing compile checks. Highly sampled internal paths exceeding the
+research adapter's 64-point line limit are also refused rather than truncated.
+
+**Mesh resolution lab...** in the same inspector provides three comparison
+presets: a small shirring patch, a gathered skirt panel and an anisotropic sleeve.
+Click **Generate comparison** to run on a separate CPU thread, then inspect
+coarse/adaptive/fine previews with one shared color scale. A narrow window uses
+tabs. Changing inputs marks old results stale. Cancel or close cancels the
+bounded job; a late result cannot replace the retained comparison. Optional
+**Export meshes** writes to `<session output>/mesh-resolution-lab`; it does not
+apply meshes to your garment. The separate preparation controls above do.
+
+## Run the mesh-only comparison
+
+```sh
+cargo run --locked --no-default-features -j 2 --example pie_resolution -- --preset skirt --compare
 cargo run --locked --no-default-features -j 2 --example pie_resolution -- \
   --input examples/pie_resolution/shirring.json --output output/pie-custom --compare
 cargo test --locked --no-default-features -j 2 --test pie_resolution -- --test-threads=2
@@ -23,9 +73,9 @@ cargo clippy --locked --no-default-features -j 2 --example pie_resolution --test
 ```
 
 All commands are CPU-only. No desktop feature or GPU/window is required.
-There are no dependency, solver, production mesher, editable format or default
-behavior changes. The new example has private modules reused by its integration
-tests. It can be evaluated separately from the coordinated native authoring work.
+No dependency or solver changes are required. The default mesher stays unchanged.
+The optional preparation plan is an additive, omitted-when-absent setting in
+`MeshingSettings`. CLI, native UI and tests share `src/mesh_resolution/`.
 
 The default original fixture is a 180 by 240 mm rectangle with an internal
 120 mm constraint representing a gather line. Its base fabric has B = 2e-6
@@ -49,13 +99,13 @@ The output directory receives:
 The JSON is a separate research input/output contract, **not** a new
 `GarmentTemplate`, `FittingProject` or persistent measurement representation.
 Output indices are rebuildable mesh indices, not editable semantic identities.
-The tool does not install a new mesh in a live simulation or transfer state.
-Reusing its output in production would require compiling masses, material
-elements, hinges, seams and attachments and invalidating dependent state caches.
+The mesh-only exporter does not install its output into a running simulation.
+The native preparation path instead goes through the existing garment compiler
+and scene replacement, rebuilding physical terms and invalidating state caches.
 
 ## Implemented method and units
 
-`examples/pie_resolution/sizing.rs` implements equation 4:
+`src/mesh_resolution/sizing.rs` implements equation 4:
 
 ```text
 c1 * r^6 + c2 * r^4 = B/E
@@ -96,8 +146,8 @@ L_compression = prefactor * lambda^(3/2) * (delta/h^2)^(1/4)
 Lambda, L and h are metres; T is tension in N/m, B is N m and delta is a
 dimensionless compressive fraction. The proportionality prefactor is explicit.
 Wavelength and mesh spacing are different inputs: this tool does not silently
-equate them. `summary.json` includes two labelled numerical scaling examples,
-not inferred material calibrations or the default fixture's transition inputs.
+equate them. These utilities do not infer a calibration or replace explicitly authored
+transition inputs.
 
 ## Explicit independent design choices
 
@@ -133,7 +183,7 @@ unexpected collision adaptation and dynamic remeshing are outside this tool.
 
 ## Geometry, sampling and checked bounds
 
-`examples/pie_resolution/mesh.rs` accepts a straight sampled CCW outer ring,
+`src/mesh_resolution/mesh.rs` accepts a straight sampled CCW outer ring,
 clockwise holes and disjoint internal polylines, in material metres. Each ring
 segment has a unique semantic name; each internal line has a name. Curves can
 be sampled before supplying this input, but the tool does not change or promote
@@ -179,13 +229,15 @@ depth or refinement-pass budgets return an error, never a partial mesh.
 
 The enforced size condition is **area**, not a maximum edge or minimum angle
 guarantee. Actual maximum metric edge and minimum metric angle are reported;
-no 25-degree angle bound from the production mesher is claimed. Sliver removal,
-variable metric angle optimization and convergence tests on the physical
-simulator are future integration gates.
+the comparison mesh has no 25-degree angle guarantee. Static simulation
+preparation additionally requests Spade angle refinement in the fixed base
+metric and alternates it with spatial area checks within the same vertex/pass
+budgets. Acute input angles retain the usual constrained-refinement limitations.
+Variable-metric angle optimization and physical convergence remain open gates.
 
 ## Evidence and handoff
 
-The 12 focused CPU tests cover the published table, equation residuals,
+The original 12 focused CPU tests cover the published table, equation residuals,
 monotonicity/clamps, invalid units and coefficients, directional estimates,
 shirring ratios, wrinkle scaling powers, exact transition doubling, source
 ordering, length-unit covariance, conservative region/directional bounds,
@@ -213,7 +265,9 @@ One local run measured approximately 25 ms adaptive, 10 ms uniform base and
 39 ms uniform fine for complete CPU mesh generation. These are illustrative
 single-run wall times, not a statistical performance result, simulation step
 times or rendering timings. SVG output was rendered and visually inspected.
-No cloth dynamics, wrinkle quality, GPU work or garment-scale speedup was tested.
+The initial mesh-only pass did not test cloth dynamics. The simulation integration
+adds short CPU dynamics checks; wrinkle quality, GPU computation and garment-scale
+speedup remain unvalidated.
 
 CLI acceptance also replayed the saved research input and compared all three
 mesh JSON files byte-for-byte after parsing: vertices, faces, boundary chains,
@@ -221,7 +275,33 @@ spacings and quality were identical. A 64-vertex budget failed before creating
 the requested output directory. Focused strict Clippy and rustfmt checks passed.
 The full locked CPU regression command also completed successfully:
 `cargo test --locked --no-default-features -j 2 -- --test-threads=2`, including
-all 12 new cases and the existing library, integration and documentation tests.
+the sizing/preparation cases and the existing library, integration and documentation tests.
+
+Simulation/UI integration acceptance on the final branch:
+
+- Full locked CPU suite: **505 passed**, zero failed.
+- Full desktop `cloth-fit` CPU suite: **161 passed**, zero failed, two optional
+  captures ignored; the new capture was also explicitly run successfully.
+- The eight static-preparation integration cases cover material area/mass,
+  partial sewing and names, curved boundaries, deterministic rebuild/reload,
+  material/grain rebinding, stale fitting-cache rejection, history, expected
+  free fall with fixed topology, and real gathered sewing with retained pins.
+- Four named-widget/transport cases cover explicit generation, cancellation,
+  stale exports, narrow layouts, numeric validation, text focus and paused-only
+  preparation. The CPU-rasterized egui preview was visually inspected at
+  `output/pie-preview/mesh-lab.png`. It is not a native GPU/window capture.
+- Strict Clippy passed for the changed binary, example and integration targets.
+  Broad `--all-targets` Clippy remains blocked by the unchanged
+  `src/authoring.rs:731` `items_after_test_module` lint on the current toolchain;
+  the reserved authoring file was not modified to hide or fix that unrelated
+  failure. The binary recursion limit was raised to 256 to let the compiler
+  evaluate the existing wgpu worker's `Send` requirements without its reported
+  recursion-depth warning; no lint was suppressed.
+
+The native gathered example also completed a short 12-step CPU CLI run.
+This verifies initialization, accepted steps and output with the prepared
+mesh; it is an early assembly transient, not a settled fit/strain or wrinkle
+accuracy result. GPU simulation and native-window interaction remain untested.
 
 Original implementation and original synthetic fixture; no authors' code,
 paper figures, garment assets or EXO source were copied. Existing project

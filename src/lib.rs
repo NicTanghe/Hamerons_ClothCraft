@@ -14,6 +14,8 @@ pub mod gltf_avatar;
 pub mod gpu_vbd;
 pub mod issue_report;
 pub mod math;
+/// Opt-in static mesh-sizing research; never used by the production remesher.
+pub mod mesh_resolution;
 pub mod model;
 pub mod motion;
 pub mod ogc;

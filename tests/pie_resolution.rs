@@ -1,12 +1,66 @@
-//! Independent numerical and geometry oracles for the opt-in example.
-#[path = "../examples/pie_resolution/mesh.rs"]
-mod mesh;
-#[path = "../examples/pie_resolution/sizing.rs"]
-mod sizing;
+//! Independent numerical and geometry oracles for the opt-in sizing experiment.
 use glam::DVec2;
+use marvelous_cloth::mesh_resolution::{Experiment, Preset, artifacts};
+use marvelous_cloth::mesh_resolution::{mesh, sizing};
 use mesh::{Domain, Options, Ring};
 use sizing::{Calibration, Fabric, Feature, SizingMap, Source};
 use std::collections::BTreeMap;
+
+#[test]
+fn demonstration_presets_are_bounded_reproducible_and_preserve_domain_area() {
+    for preset in Preset::ALL {
+        let input = Experiment::preset(preset).unwrap();
+        let original = serde_json::to_value(&input).unwrap();
+        let comparison = input.generate(true).unwrap();
+        assert!(
+            comparison.vertex_reduction_percent().unwrap() > 20.,
+            "{preset:?}"
+        );
+        for run in comparison.runs {
+            assert!(run.output.quality.vertices <= input.options.max_vertices);
+            assert!((run.output.quality.area_m2 - input.domain.area()).abs() < 1e-10);
+        }
+        assert_eq!(original, serde_json::to_value(&input).unwrap());
+    }
+}
+#[test]
+fn cancellation_interrupts_generation_and_allows_clean_retry() {
+    let input = Experiment::preset(Preset::Shirring).unwrap();
+    let count = std::cell::Cell::new(0);
+    let error = input
+        .generate_with_cancel(true, &|| {
+            let n = count.get() + 1;
+            count.set(n);
+            n > 15
+        })
+        .unwrap_err();
+    assert!(error.contains("cancelled"));
+    assert!(input.generate(false).is_ok());
+}
+#[test]
+fn exported_comparison_reloads_the_same_mesh_and_has_explicit_timing_units() {
+    let input = Experiment::preset(Preset::Shirring).unwrap();
+    let comparison = input.generate(false).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    artifacts::write_comparison(dir.path(), &input, &comparison).unwrap();
+    let loaded: Experiment =
+        serde_json::from_slice(&std::fs::read(dir.path().join("input.json")).unwrap()).unwrap();
+    let repeated = loaded.generate(false).unwrap();
+    assert_eq!(comparison.runs[0].output.uv, repeated.runs[0].output.uv);
+    assert_eq!(
+        comparison.runs[0].output.faces,
+        repeated.runs[0].output.faces
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.path().join("summary.json")).unwrap()).unwrap();
+    assert!(
+        summary["units"]
+            .as_str()
+            .unwrap()
+            .contains("not simulation")
+    );
+    assert!(dir.path().join("adaptive.svg").exists());
+}
 
 fn square() -> Domain {
     Domain {

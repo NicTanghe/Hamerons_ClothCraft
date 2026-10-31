@@ -47,3 +47,13 @@ Commands and captures: [first fitting](first-fit.md). Density reduces geometric 
 - [Spade constrained triangulation and refinement](https://docs.rs/spade/2.15.1/spade/struct.ConstrainedDelaunayTriangulation.html): API used, Steiner insertion and quality limits.
 - [Refinement parameters](https://docs.rs/spade/2.15.1/spade/struct.RefinementParameters.html): area, angle, budget and exterior-face exclusion.
 - [Spade repository and license](https://github.com/Stoeoef/spade/blob/master/Cargo.toml): MIT OR Apache-2.0. This backend is a declared dependency, not a claimed reimplementation.
+
+## Optional static fabric sizing
+
+On the independent mesh-resolution branch, `physics_sizing` is an optional,
+omitted-when-absent meshing setting. **Simulation > Prepare mesh before
+simulation** builds it once and resets the scene. It is not evaluated by solver
+steps. Reset recompiles the same plan; no on-the-fly remeshing is supported.
+The existing compiler still derives all rest quantities from 2D material metres.
+See [one-time preparation, demo and limits](pie-resolution.md) for explicit Pa
+inputs, boundary-band semantics, angle/area checks and CPU acceptance evidence.

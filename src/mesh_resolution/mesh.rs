@@ -2,9 +2,10 @@
 //! CDT uses a fixed base metric. Spatial sizing controls sampling/refinement,
 //! not a claim of Delaunay optimality in a varying Riemannian metric.
 use super::sizing::SizingMap;
+use crate::garment::{domain, polygon::PolygonPattern};
 use glam::DVec2;
-use marvelous_cloth::garment::{domain, polygon::PolygonPattern};
 use serde::{Deserialize, Serialize};
+use spade::{AngleLimit, RefinementParameters};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -245,6 +246,7 @@ fn poisson(
     map: &SizingMap,
     seeds: Vec<DVec2>,
     options: &Options,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<DVec2>, String> {
     let cell = map.base().into_iter().fold(0., f64::max);
     let key = |p: DVec2| ((p.x / cell).floor() as i64, (p.y / cell).floor() as i64);
@@ -256,6 +258,9 @@ fn poisson(
     }
     let mut rng = Rng(options.seed.max(1));
     while !active.is_empty() {
+        if cancelled() {
+            return Err("Comparison cancelled".into());
+        }
         let slot = (rng.unit() * active.len() as f64) as usize;
         let a = points[active[slot]];
         let h = map.spacing(a);
@@ -309,6 +314,31 @@ fn poisson(
 }
 
 pub fn generate(domain: &Domain, map: &SizingMap, options: &Options) -> Result<Output, String> {
+    generate_with_cancel(domain, map, options, &|| false)
+}
+pub fn generate_with_cancel(
+    domain: &Domain,
+    map: &SizingMap,
+    options: &Options,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Output, String> {
+    generate_with_quality(domain, map, options, cancelled, None)
+}
+/// Production preparation additionally requests angle refinement in the fixed
+/// base metric. Size refinement still checks the entire spatial field.
+pub fn generate_with_quality(
+    domain: &Domain,
+    map: &SizingMap,
+    options: &Options,
+    cancelled: &dyn Fn() -> bool,
+    angle: Option<f64>,
+) -> Result<Output, String> {
+    if angle.is_some_and(|a| !a.is_finite() || !(15. ..=30.).contains(&a)) {
+        return Err("Invalid requested metric angle".into());
+    }
+    if cancelled() {
+        return Err("Comparison cancelled".into());
+    }
     domain.validate()?;
     options.validate()?;
     // Avoid a single mutable meshing/model/material cache. This temporary CDT
@@ -321,6 +351,9 @@ pub fn generate(domain: &Domain, map: &SizingMap, options: &Options) -> Result<O
     let material = |p: Point2<f64>| map.material_vector(DVec2::new(p.x, p.y) * base);
     let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
     for (_, path) in domain.paths() {
+        if cancelled() {
+            return Err("Comparison cancelled".into());
+        }
         for w in path.windows(2) {
             let samples = sampled_segment(
                 w[0],
@@ -346,7 +379,7 @@ pub fn generate(domain: &Domain, map: &SizingMap, options: &Options) -> Result<O
     }
     let seed_count = cdt.num_vertices();
     let seeds = cdt.vertices().map(|v| material(v.position())).collect();
-    let cloud = poisson(domain, map, seeds, options)?;
+    let cloud = poisson(domain, map, seeds, options, cancelled)?;
     // Existing constraint handles must stay bit-identical under rotated metrics.
     for p in &cloud[seed_count..] {
         cdt.insert(q(*p)).map_err(|e| e.to_string())?;
@@ -375,6 +408,21 @@ pub fn generate(domain: &Domain, map: &SizingMap, options: &Options) -> Result<O
     }
     let mut complete = false;
     for _ in 0..options.max_refinement_passes {
+        if cancelled() {
+            return Err("Comparison cancelled".into());
+        }
+        if let Some(angle) = angle {
+            let result = cdt.refine(
+                RefinementParameters::new()
+                    .with_angle_limit(AngleLimit::from_deg(angle))
+                    .with_max_additional_vertices(
+                        options.max_vertices.saturating_sub(cdt.num_vertices()),
+                    ),
+            );
+            if !result.refinement_complete {
+                return Err("Angle refinement exceeds vertex budget".into());
+            }
+        }
         let mut additions = vec![];
         for f in cdt.inner_faces() {
             let p = f.vertices().map(|v| material(v.position()));

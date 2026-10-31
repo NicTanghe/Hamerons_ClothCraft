@@ -1,5 +1,24 @@
 # Repository handoff
 
+## One-time physics-inspired mesh preparation — 31 October 2026
+
+The independent `codex/physics-inspired-mesh-resolution` branch now shares
+its CPU sizing implementation between CLI comparison examples and the native
+Simulation inspector. **Prepare mesh before simulation** compiles an optional
+static plan and resets the arrangement through the existing scene installer;
+the resulting topology stays fixed during solver steps. Reset rebuilds the
+same plan. Existing uniform defaults and solver/contact rules are unchanged.
+
+The optional meshing settings retain explicit Pa estimates; bending and grain
+are rebound to the current fabric/panel during compilation. Named boundaries,
+mass, seam compilation, ordinary saves and signed caches use the normal paths.
+CPU checks cover physical compilation, fixed-topology stepping, pins, curves,
+cache rejection, deterministic reset, history and native named controls.
+The comparison UI has an explicitly invoked CPU-rasterized layout preview;
+native-window/GPU runtime acceptance has not been performed.
+See [the runnable gathered-panel project, UI placement and limits](pie-resolution.md).
+
+
 ## Editor transitions and workspace profiles — 26 October 2026
 
 PR #111 merged as `07c4988`. The production cancellation and installation
