@@ -236,22 +236,35 @@ impl Atelier {
                         self.scene.state.x.len(),
                         self.scene.garment.mesh.triangles.len()
                     ));
-                    mesh_resolution_ui::launch(ui,!self.playing&&!self.pending);
-                    ui.collapsing("Prepare mesh before simulation",|ui| {
-                        let ready=!self.playing&&!self.pending&&self.authoring.preview.is_none()
-                            &&self.authoring.drag.is_none()&&self.authoring.draft.is_empty()&&self.authoring.dart.is_none()
-                            &&!self.authoring.board.gesture_active()&&self.authoring.ends.is_empty()
-                            &&self.authoring.sewing.start.is_none()&&self.authoring.sewing.sides.iter().all(Vec::is_empty);
-                        if let Some(request)=mesh_resolution_ui::preparation_controls(ui,&self.project.template,self.authoring.selected.as_deref(),ready) {
-                            match marvelous_cloth::mesh_resolution::preparation::configure(&self.project.template,&request.panels,request.young_pa,request.ratio,request.transition_m,request.physics) {
-                                Ok(template)=> {
-                                    let mut project=self.project.clone();project.template=template;project.state=None;project.mesh_signature=None;project.prearrange=false;
-                                    if self.load(project) {self.status="Mesh prepared · press Simulate; topology stays fixed for the run".into();}
-                                },
-                                Err(error)=>self.status=error,
+                    ui.separator();
+                    let ready = !self.playing && !self.pending
+                        && self.authoring.preview.is_none() && self.authoring.drag.is_none()
+                        && self.authoring.draft.is_empty() && self.authoring.dart.is_none()
+                        && !self.authoring.board.gesture_active() && self.authoring.ends.is_empty()
+                        && self.authoring.sewing.start.is_none()
+                        && self.authoring.sewing.sides.iter().all(Vec::is_empty);
+                    if let Some(request) = mesh_resolution_ui::preparation_controls(
+                        ui, &self.project.template, self.authoring.selected.as_deref(), ready,
+                    ) {
+                        match marvelous_cloth::mesh_resolution::preparation::configure(
+                            &self.project.template, &request.panels, request.young_pa,
+                            request.ratio, request.transition_m, request.physics,
+                        ) {
+                            Ok(template) => {
+                                let mut project = self.project.clone();
+                                project.template = template;
+                                project.state = None;
+                                project.mesh_signature = None;
+                                project.prearrange = false;
+                                if self.load(project) {
+                                    self.status = "Mesh prepared · press Simulate; topology stays fixed for the run".into();
+                                }
                             }
+                            Err(error) => self.status = error,
                         }
-                    });
+                    }
+                    ui.separator();
+                    mesh_resolution_ui::launch(ui,!self.playing&&!self.pending);
                     ui.separator();
                     ui.strong("Solver settings");
                     ui.checkbox(&mut self.gpu, "GPU compute");

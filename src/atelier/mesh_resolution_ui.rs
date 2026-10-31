@@ -421,12 +421,15 @@ pub(super) fn preparation_controls(
     selected: Option<&str>,
     enabled: bool,
 ) -> Option<PrepareRequest> {
-    let Some(panel) = template
+    ui.strong("Physics-inspired mesh preparation");
+    let selected_panel = template
         .panels
         .iter()
-        .find(|p| Some(p.id.as_str()) == selected && p.polygon.is_some())
+        .find(|p| Some(p.id.as_str()) == selected && p.polygon.is_some());
+    let Some(panel) =
+        selected_panel.or_else(|| template.panels.iter().find(|p| p.polygon.is_some()))
     else {
-        ui.small("Select an editable polygon piece to prepare its simulation mesh.");
+        ui.small("Add an editable polygon piece to prepare a physics-inspired simulation mesh.");
         return None;
     };
     let id = egui::Id::new("clothcraft.mesh-preparation-draft");
@@ -485,7 +488,17 @@ pub(super) fn preparation_controls(
             named(ui, &r, key);
         });
     }
-    ui.checkbox(&mut draft.all, "All polygon pieces");
+    if selected_panel.is_none() {
+        draft.all = true;
+    }
+    let scope = ui.add_enabled(
+        selected_panel.is_some(),
+        egui::Checkbox::new(&mut draft.all, "All polygon pieces"),
+    );
+    named(ui, &scope, "mesh_prepare.all");
+    if selected_panel.is_none() {
+        ui.small("Select a polygon piece to prepare only that piece.");
+    }
     let panels: Vec<_> = if draft.all {
         template
             .panels
@@ -556,6 +569,74 @@ mod preparation_tests {
     use super::super::super::authoring_smoke::widget_harness::Harness;
     use super::*;
     use marvelous_cloth::garment::presets::{self, GarmentKind};
+    #[test]
+    fn preparation_without_selection_targets_all_polygons_at_inspector_width() {
+        let mut template = presets::basic(GarmentKind::Tshirt, 0);
+        let panels: Vec<_> = template.panels.iter().map(|p| p.id.clone()).collect();
+        let mut legacy = template.panels[0].clone();
+        legacy.id = "legacy-rectangle".into();
+        legacy.polygon = None;
+        template.panels.push(legacy);
+        let before = serde_json::to_value(&template).unwrap();
+        let mut actions = Vec::<PrepareRequest>::new();
+        let mut harness = Harness::new(Vec2::new(240., 850.));
+        let mut draw = |ui: &mut egui::Ui, actions: &mut Vec<PrepareRequest>| {
+            if let Some(action) = preparation_controls(ui, &template, None, true) {
+                actions.push(action);
+            }
+        };
+        harness.frame(&mut actions, &mut draw);
+        assert!(actions.is_empty());
+        harness
+            .click("mesh_prepare.apply", &mut actions, &mut draw)
+            .unwrap();
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].panels, panels);
+        assert!(actions[0].physics);
+        harness
+            .click("mesh_prepare.uniform", &mut actions, &mut draw)
+            .unwrap();
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[1].panels, panels);
+        assert!(!actions[1].physics);
+        assert_eq!(before, serde_json::to_value(&template).unwrap());
+    }
+
+    #[test]
+    fn clearing_selection_restores_all_piece_preparation_scope() {
+        let template = presets::basic(GarmentKind::Tshirt, 0);
+        let selected = template.panels[0].id.clone();
+        let mut state = (Some(selected.clone()), Vec::<PrepareRequest>::new());
+        let mut harness = Harness::new(Vec2::new(280., 850.));
+        let mut draw = |ui: &mut egui::Ui, state: &mut (Option<String>, Vec<PrepareRequest>)| {
+            if let Some(action) = preparation_controls(ui, &template, state.0.as_deref(), true) {
+                state.1.push(action);
+            }
+        };
+        harness.frame(&mut state, &mut draw);
+        harness
+            .click("mesh_prepare.all", &mut state, &mut draw)
+            .unwrap();
+        harness
+            .click("mesh_prepare.apply", &mut state, &mut draw)
+            .unwrap();
+        assert_eq!(state.1[0].panels, vec![selected]);
+        state.0 = None;
+        harness.frame(&mut state, &mut draw);
+        harness
+            .click("mesh_prepare.apply", &mut state, &mut draw)
+            .unwrap();
+        assert_eq!(state.1.len(), 2);
+        assert_eq!(
+            state.1[1].panels,
+            template
+                .panels
+                .iter()
+                .map(|p| p.id.clone())
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn preparation_fields_require_explicit_apply_and_running_disables_it() {
         let template = presets::basic(GarmentKind::Tshirt, 0);

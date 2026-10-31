@@ -51,9 +51,18 @@ Commands and captures: [first fitting](first-fit.md). Density reduces geometric 
 ## Optional static fabric sizing
 
 On the independent mesh-resolution branch, `physics_sizing` is an optional,
-omitted-when-absent meshing setting. **Simulation > Prepare mesh before
-simulation** builds it once and resets the scene. It is not evaluated by solver
-steps. Reset recompiles the same plan; no on-the-fly remeshing is supported.
+omitted-when-absent meshing setting. **Simulation > Physics-inspired mesh
+preparation** builds it once and resets the scene. The controls are always
+visible and default to all polygon pieces when none is selected. It is not
+evaluated by solver steps. Reset recompiles the same plan; no on-the-fly
+remeshing is supported.
 The existing compiler still derives all rest quantities from 2D material metres.
 See [one-time preparation, demo and limits](pie-resolution.md) for explicit Pa
 inputs, boundary-band semantics, angle/area checks and CPU acceptance evidence.
+
+The default sphere/hanging reference editor exposes the same mesher through
+**Simulation > Physics-inspired mesh preparation > Remesh and reset**.
+Project v1 accepts an optional `physics_sizing` plan, omitted when absent.
+Its rectangle compiles through `PolygonPattern::build`, then receives the
+original scene placement and hanging corner pins. Clearing the plan restores
+the historical structured grid. The solver never changes topology while stepping.

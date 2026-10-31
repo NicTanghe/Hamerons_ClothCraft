@@ -15,6 +15,28 @@ of the paper's simulator, or proof of optimal resolution.
 
 ## Run a simulation example
 
+The default cloth-over-sphere demo now exposes the same static mesher:
+
+```sh
+cargo run --locked -j 2
+```
+
+Open the right-hand **Properties** tab and find **Physics-inspired mesh
+preparation** under **REST PATTERN**. The same controls and draft values are
+also available in **Simulation**. Enter warp/weft E estimates in Pa, the boundary/base spacing
+ratio and transition distance, then click **Remesh and reset**. This applies
+the current pattern/fabric settings and returns cloth to its flat initial pose
+above the same sphere. Pause and wait for an outstanding step before applying.
+The mesh is compiled from the 2D rectangle with the same constrained mesher,
+mass and hinge construction as polygon panels. Hanging mode retains its two
+top corner pins. The optional sizing plan survives Project v1 save/load and
+reset, and rebinds to the current bending/grain settings on compilation.
+**Use uniform grid and reset** returns to the original Cells X/Y grid.
+Historical projects without the optional field retain the original grid;
+the default scene, executable and reference solver are unchanged.
+
+For the separate garment editor and gathered example:
+
 Generate the native project, then open it in the existing workspace:
 
 ```sh
@@ -32,9 +54,11 @@ fixed for the run. This is a small functional example, not a calibrated garment
 or a validated wrinkle benchmark. The native window uses graphics hardware for
 rendering; the default solver remains CPU unless GPU compute is explicitly set.
 
-In **Properties > Simulation > Prepare mesh before simulation**, enter explicit
+In **Properties > Simulation > Physics-inspired mesh preparation**, enter explicit
 warp/weft Young's modulus estimates in Pa, a boundary/base spacing ratio and a
-transition distance in mm. Choose one selected polygon or all polygons, then
+transition distance in mm. The controls are always expanded. With no polygon
+selected, preparation targets all polygon pieces; select a polygon to enable
+the single-piece scope. Choose one selected polygon or all polygons, then
 click **Prepare mesh and reset**. This compiles a new rest mesh and resets the
 cloth arrangement; it adds one history entry. Invalid input or failed compile
 preserves the existing garment. **Use uniform mesh and reset** clears the plan.
