@@ -3,8 +3,19 @@ use super::*;
 use glam::{DVec2, DVec3};
 use marvelous_cloth::{
     authoring::{self, Command, ConstructionRef, Edit, History, PointConstruction},
-    garment::{meshing::MeshingSettings, seam::BoundaryRef, template::Placement},
+    garment::{
+        markings::{MAX_ALLOWANCE_M, Notch, NotchKind, polyline_length, validate_notch},
+        meshing::MeshingSettings,
+        polygon::PolygonPattern,
+        seam::BoundaryRef,
+        template::Placement,
+    },
 };
+
+/// Seam-allowance width shown for a boundary that has none stored yet.
+const DEFAULT_ALLOWANCE_MM: f64 = 10.;
+/// Notch length shown when the draft has not been set.
+const DEFAULT_NOTCH_LENGTH_MM: f64 = 5.;
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum Tool {
@@ -62,6 +73,25 @@ pub(super) struct AuthoringUi {
     pub target_edge: Option<(String, String)>,
     /// Target length draft, in millimetres. The document stores metres.
     pub target_mm: f64,
+    /// Draft state for the selected boundary's manufacturing markings.
+    pub markings: MarkingsDraft,
+}
+
+/// Editable seam-allowance and notch fields; no command runs until Apply/Add.
+#[derive(Default)]
+pub(super) struct MarkingsDraft {
+    /// Boundary the draft belongs to: (panel id, boundary name).
+    pub edge: Option<(String, String)>,
+    /// Seam allowance draft, in millimetres.
+    pub allowance_mm: f64,
+    /// Notch position draft, measured in millimetres from the boundary start.
+    pub notch_at_mm: f64,
+    /// Notch marker length draft, in millimetres.
+    pub notch_len_mm: f64,
+    /// Notch marker shape for the next notch.
+    pub notch_kind: NotchKind,
+    /// Last rejected draft value, exposed for the CPU harness and diagnostics.
+    pub error: Option<String>,
 }
 
 /// Transient material-space draft; no mesh is compiled while typing or painting.
@@ -291,6 +321,206 @@ pub(super) fn millimetre_field(ui: &mut egui::Ui, value_mm: &mut f64) -> bool {
             .suffix(" mm"),
     )
     .changed()
+}
+
+fn markings_mark(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    name: impl Into<String>,
+    targets: &mut Vec<(String, egui::Rect)>,
+) {
+    let name = name.into();
+    #[cfg(test)]
+    super::authoring_smoke::widget_harness::named(ui, response, &name);
+    #[cfg(not(test))]
+    let _ = ui;
+    targets.push((name, response.rect));
+}
+
+fn markings_mm_field(
+    ui: &mut egui::Ui,
+    value_mm: &mut f64,
+    name: &str,
+    targets: &mut Vec<(String, egui::Rect)>,
+) -> bool {
+    let response = ui.add(
+        egui::DragValue::new(value_mm)
+            .speed(0.1)
+            .max_decimals(1)
+            .suffix(" mm"),
+    );
+    markings_mark(ui, &response, name, targets);
+    response.changed()
+}
+
+/// Seam-allowance and notch inspector for one selected outer boundary. Draft
+/// edits are local until Apply/Add/Clear/Remove returns a command; Cancel
+/// restores the stored values. Keeping this independent of `Atelier` lets the
+/// CPU named-widget harness exercise staging, cancellation and validation.
+pub(super) fn marking_controls(
+    ui: &mut egui::Ui,
+    panel: &str,
+    polygon: &PolygonPattern,
+    name: &str,
+    draft: &mut MarkingsDraft,
+    targets: &mut Vec<(String, egui::Rect)>,
+) -> Option<Command> {
+    let length = polygon
+        .closed_boundary(name)
+        .map(|p| polyline_length(&p))
+        .unwrap_or(0.);
+    if draft.edge.as_ref() != Some(&(panel.to_string(), name.to_string())) {
+        draft.edge = Some((panel.to_string(), name.to_string()));
+        draft.allowance_mm = if polygon.seam_allowances.contains_key(name) {
+            polygon.allowance_of(name) * 1000.
+        } else {
+            DEFAULT_ALLOWANCE_MM
+        };
+        draft.notch_at_mm = length * 1000. * 0.5;
+        if draft.notch_len_mm <= 0. {
+            draft.notch_len_mm = DEFAULT_NOTCH_LENGTH_MM;
+        }
+        draft.error = None;
+    }
+
+    ui.separator();
+    ui.strong("Seam allowance");
+    ui.horizontal(|ui| {
+        ui.label("Width");
+        markings_mm_field(ui, &mut draft.allowance_mm, "markings.allowance", targets);
+    });
+    let allowance_m = authoring::mm_to_m(draft.allowance_mm);
+    let allowance_ok =
+        allowance_m.is_finite() && allowance_m > 0. && allowance_m <= MAX_ALLOWANCE_M;
+    let allowance_error = (!allowance_ok)
+        .then(|| format!("Allowance must be in (0, {} mm]", MAX_ALLOWANCE_M * 1000.));
+    if let Some(error) = &allowance_error {
+        ui.colored_label(Color32::GOLD, error);
+    }
+    let stored = polygon.seam_allowances.contains_key(name);
+    let (apply, clear) = ui
+        .horizontal(|ui| {
+            let apply = ui
+                .add_enabled(allowance_ok, egui::Button::new("Apply allowance"))
+                .on_hover_text("Offset this boundary outward to make the cutting line");
+            let clear = ui.add_enabled(stored, egui::Button::new("Clear allowance"));
+            markings_mark(ui, &apply, "markings_allowance", targets);
+            markings_mark(ui, &clear, "markings_clear", targets);
+            (apply.clicked(), clear.clicked())
+        })
+        .inner;
+    match polygon.cutting_contour() {
+        Ok(Some(contour)) => {
+            ui.small(format!("Cutting line: {} points", contour.outer.len()));
+        }
+        Ok(None) => {}
+        Err(error) => {
+            ui.colored_label(Color32::LIGHT_RED, error);
+        }
+    }
+
+    ui.strong("Notches");
+    ui.small("Marks the sewing line; the cut edge is drawn unmarked.");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("At");
+        markings_mm_field(ui, &mut draft.notch_at_mm, "markings.notch_at", targets);
+        ui.label("Length");
+        markings_mm_field(ui, &mut draft.notch_len_mm, "markings.notch_len", targets);
+    });
+    ui.horizontal(|ui| {
+        let v = ui.selectable_value(&mut draft.notch_kind, NotchKind::V, "V");
+        let slit = ui.selectable_value(&mut draft.notch_kind, NotchKind::Slit, "Slit");
+        markings_mark(ui, &v, "markings.kind.v", targets);
+        markings_mark(ui, &slit, "markings.kind.slit", targets);
+    });
+    let at = if length > 0. {
+        authoring::mm_to_m(draft.notch_at_mm) / length
+    } else {
+        0.5
+    };
+    let notch = Notch::new(at, authoring::mm_to_m(draft.notch_len_mm), draft.notch_kind);
+    let notch_error = if length <= 0. {
+        Some("Boundary has no measurable length".to_owned())
+    } else {
+        validate_notch(&notch, length).err()
+    };
+    if let Some(error) = &notch_error {
+        ui.colored_label(Color32::GOLD, error);
+    }
+    let add = ui
+        .add_enabled(notch_error.is_none(), egui::Button::new("Add notch"))
+        .on_hover_text("Slit: 1 mm from each end; V: its full span stays inside");
+    markings_mark(ui, &add, "markings_notch", targets);
+
+    let mut command = None;
+    let mut remove = None;
+    if apply {
+        command = Some(Command::SeamAllowance {
+            panel: panel.to_string(),
+            edge: name.to_string(),
+            width_m: allowance_m,
+        });
+    } else if clear {
+        command = Some(Command::SeamAllowance {
+            panel: panel.to_string(),
+            edge: name.to_string(),
+            width_m: 0.,
+        });
+    } else if add.clicked() {
+        command = Some(Command::SetNotch {
+            panel: panel.to_string(),
+            edge: name.to_string(),
+            index: None,
+            notch,
+        });
+    }
+    if let Some(list) = polygon.notches.get(name) {
+        for (i, existing) in list.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.small(format!(
+                    "#{} at {:.1} mm · {:.1} mm · {}",
+                    i + 1,
+                    existing.at * length * 1000.,
+                    existing.length_m * 1000.,
+                    match existing.kind {
+                        NotchKind::V => "V",
+                        NotchKind::Slit => "slit",
+                    }
+                ));
+                let button = ui.small_button("Remove");
+                markings_mark(ui, &button, format!("markings_remove_{i}"), targets);
+                if button.clicked() {
+                    remove = Some(Command::RemoveNotch {
+                        panel: panel.to_string(),
+                        edge: name.to_string(),
+                        index: i,
+                    });
+                }
+            });
+        }
+    } else {
+        ui.small("No notches on this boundary.");
+    }
+    if command.is_none() {
+        command = remove;
+    }
+
+    let cancel = ui.button("Cancel draft");
+    markings_mark(ui, &cancel, "markings.cancel", targets);
+    if cancel.clicked() {
+        draft.allowance_mm = if stored {
+            polygon.allowance_of(name) * 1000.
+        } else {
+            DEFAULT_ALLOWANCE_MM
+        };
+        draft.notch_at_mm = length * 1000. * 0.5;
+        draft.notch_len_mm = DEFAULT_NOTCH_LENGTH_MM;
+        draft.notch_kind = NotchKind::V;
+        draft.error = None;
+        return None;
+    }
+    draft.error = allowance_error.or(notch_error);
+    command
 }
 
 pub(super) struct ConstructionDraft {
@@ -1466,7 +1696,7 @@ impl EditorTransition<'_> {
             *self.dirty = true;
             self.authoring.fabric_draft = None;
             self.authoring.error = None;
-            *self.status = "Visual appearance updated".into();
+            *self.status = "Draft metadata updated".into();
             return;
         }
         self.authoring.dart = None;
@@ -1548,6 +1778,7 @@ impl EditorTransition<'_> {
         self.authoring.numeric_panel = None;
         self.authoring.numeric_anchor = None;
         self.authoring.target_edge = None;
+        self.authoring.markings.edge = None;
         self.authoring.ends.clear();
         self.authoring.edge = self.authoring.edge.take().filter(|edge| {
             self.scene.garment.panels.iter().any(|p| {
@@ -1601,7 +1832,7 @@ mod construction_tests {
     #[test]
     fn named_widgets_dart_minimum_inspector_width_keeps_fields_and_actions_visible() {
         use super::super::authoring_smoke::widget_harness::Harness;
-        let template = template();
+        let template = super::construction_tests::template();
         let panel = &template.panels[0].id;
         let mut draft = None;
         let mut draw = |ui: &mut egui::Ui, draft: &mut Option<DartDraft>| {
@@ -1943,7 +2174,7 @@ mod construction_tests {
             history: History,
             applies: usize,
         }
-        let template = template();
+        let template = super::construction_tests::template();
         let target = ConstructionRef {
             panel: template.panels[0].id.clone(),
             edge: "edge_4".into(),
@@ -2008,7 +2239,7 @@ mod construction_tests {
         let undo = c.history.restore(&c.template, false).unwrap();
         assert_eq!(serde_json::to_string(&undo.template).unwrap(), before);
     }
-    fn template() -> marvelous_cloth::garment::GarmentTemplate {
+    pub(super) fn template() -> marvelous_cloth::garment::GarmentTemplate {
         use marvelous_cloth::garment::presets::{self, GarmentKind};
         authoring::apply(
             &presets::basic(GarmentKind::Tshirt, 0),
@@ -2632,5 +2863,262 @@ mod transition_tests {
         assert_eq!(state.scene.state.x, frozen_state.x);
         assert_eq!(state.scene.state.v, frozen_state.v);
         assert_eq!(state.scene.state.time, frozen_state.time);
+    }
+    #[test]
+    fn named_widgets_markings_stage_cancel_apply_and_show_invalid_input() {
+        use super::super::authoring_smoke::widget_harness::Harness;
+        struct Case {
+            template: marvelous_cloth::garment::GarmentTemplate,
+            panel: String,
+            draft: MarkingsDraft,
+            commands: Vec<Command>,
+        }
+        let template = super::construction_tests::template();
+        let panel = template.panels[0].id.clone();
+        let halfway_mm = {
+            let boundary = template.panels[0]
+                .polygon
+                .as_ref()
+                .unwrap()
+                .closed_boundary("edge_1")
+                .unwrap();
+            polyline_length(&boundary) * 500.
+        };
+        let mut c = Case {
+            template,
+            panel,
+            draft: MarkingsDraft::default(),
+            commands: Vec::new(),
+        };
+        let mut draw = |ui: &mut egui::Ui, c: &mut Case| {
+            let polygon = c.template.panels[0].polygon.as_ref().unwrap();
+            let command = marking_controls(
+                ui,
+                &c.panel,
+                polygon,
+                "edge_1",
+                &mut c.draft,
+                &mut Vec::new(),
+            );
+            if let Some(command) = command {
+                c.commands.push(command);
+            }
+        };
+        let mut h = Harness::new(Vec2::new(400., 800.));
+        h.frame(&mut c, &mut draw);
+        assert!((c.draft.allowance_mm - DEFAULT_ALLOWANCE_MM).abs() < 1e-12);
+        assert!((c.draft.notch_at_mm - halfway_mm).abs() < 1e-9);
+        assert!(c.draft.error.is_none());
+
+        // Apply the staged default allowance; the returned command is the only
+        // document edit, and remains observable to the harness.
+        h.click("markings_allowance", &mut c, &mut draw).unwrap();
+        assert_eq!(c.commands.len(), 1);
+        match &c.commands[0] {
+            Command::SeamAllowance { width_m, .. } => {
+                assert!((width_m - 0.01).abs() < 1e-12);
+            }
+            _ => panic!("unexpected command kind"),
+        }
+
+        // Invalid staged input is rejected before a command is produced.
+        c.draft.allowance_mm = 150.;
+        h.frame(&mut c, &mut draw);
+        assert!(
+            c.draft
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Allowance"))
+        );
+        assert!(
+            h.click("markings_allowance", &mut c, &mut draw)
+                .unwrap_err()
+                .contains("disabled")
+        );
+        assert_eq!(c.commands.len(), 1);
+
+        // A valid staged value is applied as a command.
+        c.draft.allowance_mm = 25.;
+        h.frame(&mut c, &mut draw);
+        h.click("markings_allowance", &mut c, &mut draw).unwrap();
+        assert_eq!(c.commands.len(), 2);
+        match &c.commands[1] {
+            Command::SeamAllowance { width_m, .. } => {
+                assert!((width_m - 0.025).abs() < 1e-12);
+            }
+            _ => panic!("unexpected command kind"),
+        }
+
+        // Cancel restores the un-applied draft to the stored/default values.
+        c.draft.allowance_mm = 25.;
+        c.draft.notch_at_mm = 1.;
+        h.frame(&mut c, &mut draw);
+        h.click("markings.cancel", &mut c, &mut draw).unwrap();
+        assert!((c.draft.allowance_mm - DEFAULT_ALLOWANCE_MM).abs() < 1e-12);
+        assert!((c.draft.notch_at_mm - halfway_mm).abs() < 1e-9);
+        assert!(c.draft.error.is_none());
+
+        // Cancel is handled after the fields are laid out, so the frame in which
+        // it is clicked still holds the rejected staged value. Render the
+        // restored draft before clicking the notch action, as the next repaint
+        // does.
+        h.frame(&mut c, &mut draw);
+        h.click("markings_notch", &mut c, &mut draw).unwrap();
+        assert_eq!(c.commands.len(), 3);
+        match &c.commands[2] {
+            Command::SetNotch { notch, .. } => {
+                assert!((notch.length_m - 0.005).abs() < 1e-12);
+                assert!((notch.at - 0.5).abs() < 1e-9);
+            }
+            _ => panic!("unexpected command kind"),
+        }
+
+        c.draft.notch_len_mm = 100.;
+        h.frame(&mut c, &mut draw);
+        assert!(
+            c.draft
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("Notch length"))
+        );
+        assert!(
+            h.click("markings_notch", &mut c, &mut draw)
+                .unwrap_err()
+                .contains("disabled")
+        );
+        assert_eq!(c.commands.len(), 3);
+    }
+    #[test]
+    fn marking_only_edits_keep_playback_generation_and_the_retained_drape() {
+        let dir = tempfile::tempdir().unwrap();
+        let avatar = dir.path().join("avatar.obj");
+        std::fs::write(&avatar, "v 10 0 -10\nv 11 0 -10\nv 10 1 -10\nf 1 2 3\n").unwrap();
+        let mut project = FittingProject::basic(GarmentKind::Tshirt, 0, avatar);
+        let mut scene = project.compile().unwrap();
+        for x in &mut scene.state.x {
+            *x += DVec3::new(0.01, 0.02, 0.03);
+        }
+        scene.state.v.fill(DVec3::new(0.2, 0.3, 0.4));
+        scene.state.time = 4.;
+        let saved = scene.state.clone();
+        let retained_mesh = std::sync::Arc::clone(&scene.garment);
+        let original = serde_json::to_vec(&project.template).unwrap();
+        project.state = Some(saved.clone());
+        project.mesh_signature = Some("retained-cache".into());
+        let panel = project.template.panels[0].id.clone();
+        let mut authoring = AuthoringUi::default();
+        let mut issue = super::super::issue_ui::IssueUi::default();
+        let mut dirty = false;
+        let mut generation = 12;
+        let mut playing = true;
+        let mut pending = true;
+        let mut metrics = None;
+        let mut grab = None;
+        let mut plane = None;
+        let mut error = Some("old error".into());
+        let mut status = String::new();
+        let mut state = EditorTransition {
+            authoring: &mut authoring,
+            project: &mut project,
+            scene: &mut scene,
+            issue: &mut issue,
+            dirty: &mut dirty,
+            generation: &mut generation,
+            playing: &mut playing,
+            pending: &mut pending,
+            metrics: &mut metrics,
+            grab: &mut grab,
+            drag_plane: &mut plane,
+            simulation_error: &mut error,
+            status: &mut status,
+            dt: 1. / 60.,
+        };
+        let assert_retained =
+            |state: &EditorTransition<'_>,
+             retained: &std::sync::Arc<marvelous_cloth::garment::CompiledGarment>| {
+                assert!(*state.playing && *state.pending);
+                assert_eq!(*state.generation, 12);
+                assert!(std::sync::Arc::ptr_eq(retained, &state.scene.garment));
+                assert_eq!(state.scene.state.x, saved.x);
+                assert_eq!(state.scene.state.v, saved.v);
+                assert_eq!(state.scene.state.time, saved.time);
+                assert_eq!(
+                    state.project.mesh_signature.as_deref(),
+                    Some("retained-cache")
+                );
+                assert_eq!(state.project.state.as_ref().unwrap().x, saved.x);
+            };
+        let marking_commands = [
+            Command::SeamAllowance {
+                panel: panel.clone(),
+                edge: "hem".into(),
+                width_m: 0.01,
+            },
+            Command::SetNotch {
+                panel: panel.clone(),
+                edge: "hem".into(),
+                index: None,
+                notch: Notch::new(0.5, 0.005, NotchKind::V),
+            },
+            Command::RemoveNotch {
+                panel: panel.clone(),
+                edge: "hem".into(),
+                index: 0,
+            },
+        ];
+        for (index, command) in marking_commands.into_iter().enumerate() {
+            let edit = authoring::apply(&state.project.template, command).unwrap();
+            assert!(!edit.reset_simulation);
+            assert!(authoring::only_appearance_changed(
+                &state.project.template,
+                &edit.template
+            ));
+            state
+                .authoring
+                .history
+                .record(state.project.template.clone());
+            state.install(edit);
+            match index {
+                0 => {
+                    let polygon = state.project.template.panels[0].polygon.as_ref().unwrap();
+                    assert!(polygon.seam_allowances.contains_key("hem"));
+                }
+                1 => {
+                    let polygon = state.project.template.panels[0].polygon.as_ref().unwrap();
+                    assert_eq!(polygon.notches["hem"].len(), 1);
+                }
+                _ => {
+                    let polygon = state.project.template.panels[0].polygon.as_ref().unwrap();
+                    assert_eq!(polygon.notches.get("hem").map(Vec::len), None);
+                }
+            }
+            assert_retained(&state, &retained_mesh);
+            assert!(state.authoring.history.can_undo());
+        }
+        for expected_notches in [1, 0, 0] {
+            let undo = state
+                .authoring
+                .history
+                .restore(&state.project.template, false)
+                .unwrap();
+            state.install(undo);
+            let polygon = state.project.template.panels[0].polygon.as_ref().unwrap();
+            assert_eq!(
+                polygon.notches.get("hem").map(Vec::len).unwrap_or(0),
+                expected_notches
+            );
+            assert_retained(&state, &retained_mesh);
+        }
+        assert_eq!(
+            serde_json::to_vec(&state.project.template).unwrap(),
+            original
+        );
+        let polygon = state.project.template.panels[0].polygon.as_ref().unwrap();
+        assert!(polygon.seam_allowances.is_empty());
+        // A template that did not change is never "only appearance changed".
+        assert!(!authoring::only_appearance_changed(
+            &state.project.template,
+            &state.project.template
+        ));
     }
 }

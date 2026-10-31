@@ -1,4 +1,5 @@
 //! Named material contours, holes and internal sewing paths.
+use super::markings::Notch;
 use super::meshing::{self, MeshingSettings};
 use crate::model::{Hinge, Material, Mesh, Triangle};
 use glam::{DMat2, DVec2};
@@ -32,6 +33,15 @@ pub struct PolygonPattern {
         skip_serializing_if = "BTreeMap::is_empty"
     )]
     pub target_lengths: BTreeMap<String, f64>,
+    /// Per-boundary seam allowance in metres, keyed by the stable boundary id.
+    /// Draft data only: the cutting contour is derived on demand and never enters
+    /// the mesh, the masses or the solver. Empty maps serialise to nothing.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub seam_allowances: BTreeMap<String, f64>,
+    /// Notches keyed by the stable boundary id, each with a position along the
+    /// sampled arclength. Draft data only, like `seam_allowances`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notches: BTreeMap<String, Vec<Notch>>,
 }
 /// Tolerant reader for stored targets. A hand-edited file can hold `null` (what a
 /// non-finite float serialises to) or another unusable value. Those become `NaN`
@@ -84,10 +94,41 @@ fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2) -> bool {
     cross(a, b, c) * cross(a, b, d) <= eps * eps && cross(c, d, a) * cross(c, d, b) <= eps * eps
 }
 impl PolygonPattern {
+    /// Structural outer-contour preconditions shared by `build` and by the
+    /// public marking helpers. A hand-edited polygon can reach
+    /// `cutting_contour`, `named_boundary` or `closed_boundary` without ever
+    /// compiling, so those entrypoints must reject a mismatched point/edge list
+    /// here rather than index it.
+    pub(crate) fn validate_outer_structure(&self) -> Result<(), String> {
+        let n = self.points.len();
+        if !(3..=4096).contains(&n)
+            || self.edges.len() != n
+            || self.points.iter().any(|p| !p.is_finite())
+        {
+            return Err(
+                "Polygon outline requires 3..=4096 finite points and one edge name per point"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     pub fn edge_points(&self, i: usize) -> Result<Vec<DVec2>, String> {
-        let a = self.points[i];
+        if !(3..=4096).contains(&self.points.len()) || self.edges.len() != self.points.len() {
+            return Err(
+                "Polygon outline requires 3..=4096 points and one edge name per point".into(),
+            );
+        }
+        let a = *self
+            .points
+            .get(i)
+            .ok_or_else(|| format!("Boundary edge {i} is outside the outline"))?;
         let b = self.points[(i + 1) % self.points.len()];
-        if let Some([c, d]) = self.curves.get(&self.edges[i]) {
+        let name = self
+            .edges
+            .get(i)
+            .ok_or_else(|| format!("Boundary edge {i} has no name"))?;
+        if let Some([c, d]) = self.curves.get(name) {
             super::curves::flatten([a, *c, *d, b], super::curves::FLATNESS_M)
         } else {
             Ok(vec![a, b])
@@ -156,6 +197,7 @@ impl PolygonPattern {
         {
             return Err("Invalid Bézier edge name or control point".into());
         }
+        self.validate_markings()?;
         let mut points = vec![];
         let mut segments = vec![];
         let mut owners = vec![];

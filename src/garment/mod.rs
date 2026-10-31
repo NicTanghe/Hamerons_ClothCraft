@@ -9,6 +9,7 @@ pub mod embedding;
 pub mod export;
 pub mod freehand;
 pub mod graphics;
+pub mod markings;
 pub mod meshing;
 pub mod pins;
 pub mod polygon;

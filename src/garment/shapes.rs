@@ -89,6 +89,8 @@ pub fn primitive(
         holes: vec![],
         lines: vec![],
         target_lengths: Default::default(),
+        seam_allowances: Default::default(),
+        notches: Default::default(),
     })
 }
 
@@ -129,6 +131,13 @@ pub fn mirror(poly: &mut PolygonPattern, axis: MirrorAxis, size: DVec2) {
                 MirrorAxis::X => t.x = -t.x,
                 MirrorAxis::Y => t.y = -t.y,
             }
+        }
+    }
+    // Mirroring reverses every contour direction, outer edges and hole rims
+    // alike, so a notch's arclength fraction is measured from the other end.
+    for notches in poly.notches.values_mut() {
+        for notch in notches {
+            notch.at = 1.0 - notch.at;
         }
     }
     if let Some(settings) = &mut poly.meshing {
@@ -212,6 +221,8 @@ pub fn boolean(
             holes,
             lines: vec![],
             target_lengths: Default::default(),
+            seam_allowances: Default::default(),
+            notches: Default::default(),
         });
     }
     Ok(out)

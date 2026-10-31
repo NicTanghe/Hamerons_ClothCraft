@@ -1156,13 +1156,41 @@ impl Atelier {
                     );
                 }
                 self.edit(Command::Shape {
-                    panel: edge.panel,
-                    polygon: poly,
+                    panel: edge.panel.clone(),
+                    polygon: poly.clone(),
                 });
             }
             ui.small("Drag the points or handles on the 2D plane.");
         }
+        self.marking_properties(ui, &edge.panel, &poly, &poly.edges[k]);
         ui.separator();
+    }
+
+    /// Seam allowance and notches for the selected outer boundary. Absorbed into
+    /// the same property panel as the boundary tools so selection stays shared
+    /// between the 2D and 3D views.
+    fn marking_properties(
+        &mut self,
+        ui: &mut egui::Ui,
+        panel: &str,
+        polygon: &PolygonPattern,
+        name: &str,
+    ) {
+        let mut targets = Vec::new();
+        let command = super::authoring_ui::marking_controls(
+            ui,
+            panel,
+            polygon,
+            name,
+            &mut self.authoring.markings,
+            &mut targets,
+        );
+        for (target, rect) in targets {
+            self.smoke_target_ui(ui, &target, rect);
+        }
+        if let Some(command) = command {
+            self.edit(command);
+        }
     }
     pub(super) fn patterns(&mut self, ui: &mut egui::Ui) {
         let header = super::chrome::view_header(
@@ -2628,6 +2656,31 @@ impl Atelier {
                             );
                             painter.circle_filled(point(control), 5., Color32::LIGHT_BLUE);
                             smoke_targets.push((format!("handle_{j}"), point(control)));
+                        }
+                    }
+                }
+                // Manufacturing markings: the joined cutting line and the
+                // sewing-line notch markers. They are drawn in every tool so the
+                // drafter always sees both lines.
+                if let Some(contour) = poly.cutting_contour().ok().flatten() {
+                    for ring in std::iter::once(&contour.outer).chain(contour.holes.iter()) {
+                        let mut pts: Vec<egui::Pos2> = ring.iter().map(|uv| point(*uv)).collect();
+                        if let Some(first) = pts.first().copied() {
+                            pts.push(first);
+                        }
+                        painter.add(egui::Shape::line(
+                            pts,
+                            Stroke::new(1.2, Color32::from_rgb(0xE6, 0x4A, 0x19)),
+                        ));
+                    }
+                }
+                for (name, notches) in &poly.notches {
+                    for notch in notches {
+                        if let Ok(marker) = poly.notch_marker(name, notch) {
+                            painter.add(egui::Shape::line(
+                                marker.iter().map(|uv| point(*uv)).collect(),
+                                Stroke::new(1.2, Color32::from_rgb(0xC6, 0x28, 0x28)),
+                            ));
                         }
                     }
                 }
