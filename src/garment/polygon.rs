@@ -6,6 +6,28 @@ use glam::{DMat2, DVec2};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A station on one stable named boundary, measured by sampled material
+/// arclength. Endpoints are included; this is neither a cubic parameter nor a
+/// persistent mesh index. The schema follows Mikyle Couto's proposal in PR #66;
+/// resolution and validation below are independently implemented on current main.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementAnchor {
+    pub edge: String,
+    pub t: f64,
+}
+
+/// A named straight-line distance between two stations on the same panel in
+/// local rest material metres. It is descriptive metadata, not a constraint.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PatternMeasurement {
+    pub id: String,
+    pub label: String,
+    pub a: MeasurementAnchor,
+    pub b: MeasurementAnchor,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolygonPattern {
@@ -94,6 +116,109 @@ fn intersects(a: DVec2, b: DVec2, c: DVec2, d: DVec2) -> bool {
     cross(a, b, c) * cross(a, b, d) <= eps * eps && cross(c, d, a) * cross(c, d, b) <= eps * eps
 }
 impl PolygonPattern {
+    /// Resolve a station using the current authored material boundary. Internal
+    /// lines are permitted; their direction, unlike a closed contour's, is not
+    /// reversed by a mirror. Malformed or ambiguous boundaries fail explicitly.
+    pub fn measurement_anchor_position(&self, anchor: &MeasurementAnchor) -> Result<DVec2, String> {
+        self.validate_outer_structure()?;
+        if !anchor.t.is_finite() || !(0. ..=1.).contains(&anchor.t) {
+            return Err("Measurement station must be a finite fraction in [0, 1]".into());
+        }
+        let occurrences = self
+            .edges
+            .iter()
+            .chain(self.holes.iter().flat_map(|hole| &hole.edges))
+            .chain(self.lines.iter().map(|line| &line.id))
+            .filter(|name| *name == &anchor.edge)
+            .count();
+        if occurrences != 1 {
+            return Err(format!(
+                "Measurement references missing or ambiguous boundary {}",
+                anchor.edge
+            ));
+        }
+        let points = self
+            .named_boundary(&anchor.edge)
+            .ok_or_else(|| format!("Invalid measurement boundary {}", anchor.edge))?;
+        if points.len() < 2 || points.iter().any(|point| !point.is_finite()) {
+            return Err("Measurement boundary requires finite material points".into());
+        }
+        let total: f64 = points
+            .windows(2)
+            .map(|pair| pair[0].distance(pair[1]))
+            .sum();
+        if !total.is_finite() || total <= 0. {
+            return Err("Measurement boundary has no finite positive length".into());
+        }
+        let mut remaining = total * anchor.t;
+        for pair in points.windows(2) {
+            let length = pair[0].distance(pair[1]);
+            if length == 0. {
+                continue;
+            }
+            if remaining <= length {
+                return Ok(pair[0].lerp(pair[1], remaining / length));
+            }
+            remaining -= length;
+        }
+        // The final endpoint also handles accumulated arclength roundoff at t=1.
+        Ok(*points.last().unwrap())
+    }
+
+    pub fn measurement_points(
+        &self,
+        measurement: &PatternMeasurement,
+    ) -> Result<[DVec2; 2], String> {
+        Ok([
+            self.measurement_anchor_position(&measurement.a)?,
+            self.measurement_anchor_position(&measurement.b)?,
+        ])
+    }
+
+    /// Euclidean rest-material distance, not boundary arclength, draped surface
+    /// distance, a body measurement or an enforced target length.
+    pub fn measurement_length(&self, measurement: &PatternMeasurement) -> Result<f64, String> {
+        let [a, b] = self.measurement_points(measurement)?;
+        let length = a.distance(b);
+        if !length.is_finite() {
+            return Err("Measurement distance is not finite".into());
+        }
+        Ok(length)
+    }
+
+    /// Validate a bounded collection before accepting a transaction or document.
+    pub fn validate_measurement_records(
+        &self,
+        measurements: &[PatternMeasurement],
+    ) -> Result<(), String> {
+        if measurements.len() > 256 {
+            return Err("A panel supports at most 256 measurements".into());
+        }
+        let mut ids = BTreeSet::new();
+        for measurement in measurements {
+            if measurement.id.is_empty()
+                || measurement.id.len() > 80
+                || !measurement
+                    .id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+                || !ids.insert(&measurement.id)
+            {
+                return Err("Measurement IDs must be valid and unique within their panel".into());
+            }
+            if measurement.label.trim().is_empty()
+                || measurement.label.len() > 160
+                || measurement.label.chars().any(char::is_control)
+            {
+                return Err(
+                    "Measurement label requires 1..160 bytes without control characters".into(),
+                );
+            }
+            self.measurement_length(measurement)?;
+        }
+        Ok(())
+    }
+
     /// Structural outer-contour preconditions shared by `build` and by the
     /// public marking helpers. A hand-edited polygon can reach
     /// `cutting_contour`, `named_boundary` or `closed_boundary` without ever
