@@ -858,6 +858,8 @@ pub fn prepare(
             holes: vec![],
             lines: vec![],
             target_lengths: BTreeMap::new(),
+            seam_allowances: BTreeMap::new(),
+            notches: BTreeMap::new(),
         };
         template.panels.push(Panel {
             id: id.clone(),

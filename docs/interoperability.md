@@ -1,6 +1,6 @@
 # Interchange: actual support and next adapters
 
-Available-support table updated 2026-10-25. Later sections describe requirements, not implemented readers/writers. Inputs and outputs are separate capabilities. All adapters must sit outside the physical solver and convert through the canonical garment/asset model.
+Available-support table updated 2026-10-28. Later sections describe requirements, not implemented readers/writers. Inputs and outputs are separate capabilities. All adapters must sit outside the physical solver and convert through the canonical garment/asset model.
 
 ## Available now
 
@@ -8,9 +8,10 @@ Available-support table updated 2026-10-25. Later sections describe requirements
 |---|---|---|---|
 | ClothCraft fitting-project JSON v1 | Workspace File → Open and CLI `cloth-fit --project` | Workspace Save / Save As and CLI | Editable template, optional state and interactive settings; adjacent portable OBJ assets |
 | ClothCraft template JSON v1/v2 | Workspace template browser and `cloth-template` CLI | `template.json` | Named panels/boundaries, local metre coordinates, shared fabrics, grain, sewing and board metadata |
+| DXF (generic ASCII) | Workspace File → Import DXF patterns | None | Planar LINE, ARC, CIRCLE, LWPOLYLINE and legacy 2D POLYLINE/VERTEX on XY with the default extrusion; closed outlines only, HEADER units or an explicit millimetres-per-unit scale, source layers reported, excluded entities listed. No cut/sew/notch semantics, automatic holes or sewing inference. Not DXF-AAMA/ASTM. See [pattern import](pattern-import.md) |
 | OBJ | Workspace File → Import avatar and CLI avatar surface geometry | Static garment and grain guides | Geometry only; no MTL, skinning, animation, normals/material round trip or reconstruction of sewing patterns. Export UVs are local metres, not a packed texture atlas. Triangulate complex avatar polygons before import |
 | glTF / GLB | Workspace File → Import avatar; static geometry only | None | Node transforms and mirrored winding; metres, Y-up. No textures, animation or skinning. Ambiguous scenes are rejected; supported extensions and losses are explicit. See [avatar import](avatar-import.md) |
-| SVG | None | Pattern preview and physical sewing outlines | `patterns.svg` is an annotated preview; `patterns-print.svg` uses millimetres at actual size, with a 100 mm ruler. No allowances, nesting, grading or print tiling |
+| SVG | Workspace File → Import SVG patterns (bounded subset) | Pattern preview and physical sewing outlines with stored draft markings | Input requires explicit physical units and accepts only closed outlines; no automatic holes, seam inference or raster tracing. Output: `patterns.svg` is an annotated preview; `patterns-print.svg` uses millimetres at actual size, with a 100 mm ruler. Stored seam allowances and notches are drawn when present. No nesting, grading, print tiling or cutting certification. See [SVG import](svg-import.md) |
 | Diagnostic JSON | No general interchange reader | Metrics/fiber frames | Research outputs; fibers are surface directions, not simulated yarns |
 
 The workspace's **Export** action writes these supported outputs together to its launch directory. It replaces fixed filenames. Native project Save/Open dialogs, portable OBJ assets and local recovery are available; export still uses the session folder. See [document contracts](documents-and-sewing.md).
@@ -26,10 +27,13 @@ names are escaped as XML text. The existing `patterns.svg` remains an annotated
 preview and must not be used for print scale.
 
 Choose actual size / 100% in the viewer, disable fit-to-page, and measure the
-100 mm calibration ruler. This is an untiled sewing-outline sheet, **not a
-ready-to-cut pattern**: it has no seam allowances, cutting certification,
-printer compensation, grain annotations or PDF page layout. Curves are sampled
-polylines; downstream viewers can still apply their own scaling.
+100 mm calibration ruler. The sheet includes stored draft seam allowances and
+notches when present; unchanged holes remain part of a partial cutting contour,
+and notch-marker extents are included in the page bounds. It is an untiled
+single-sheet export, **not a ready-to-cut pattern**: it has no cutting
+certification, printer compensation, nesting, grading, page tiling or PDF
+layout. Curves are sampled polylines; downstream viewers can still apply their
+own scaling. See [markings](markings.md) for the schema and geometry limits.
 
 All artifacts are prepared after one full template validation, before existing
 files are replaced. A template or geometry error leaves those files unchanged.
@@ -58,7 +62,7 @@ equivalence and preservation of previous files on validation failure.
 
 | Priority | Format | Input milestone | Output milestone | Main blocker / acceptance |
 |---|---|---|---|---|
-| Critical | DXF-AAMA / DXF-ASTM | Pieces, explicit units, contours, grain, annotations, notches; identify dialect | Preserve piece/edge identity and cutting/sewing distinction through round trip | Generic DXF geometry is not apparel-DXF support. Independent fixtures for each dialect, unsupported-entity reports, shape/length comparisons |
+| Critical | DXF-AAMA / DXF-ASTM | Pieces, explicit units, contours, grain, annotations, notches; identify dialect | Preserve piece/edge identity and cutting/sewing distinction through round trip | Generic planar DXF geometry is imported (above), but it is not apparel-DXF support. Independent fixtures for each dialect, unsupported-entity reports, shape/length comparisons |
 | Critical | OBJ + MTL | Avatar/prop groups, material bindings, referenced textures | Per-panel groups, normals, material assignments and texture paths | Current geometry subset is partial. Validate scales, axes and missing resources |
 | Critical | glTF / GLB | Static avatars/props, then rigged/animated assets | Static garment mesh/PBR first; animation only after its model exists | Validate with Khronos tooling and independent viewers. Explicit extension policy; no editable-pattern recovery claim |
 | Critical | Alembic `.abc` | Animated avatar cache | Time-sampled garment positions/normals | Stable topology, time units and vertex order; test playback in a DCC |

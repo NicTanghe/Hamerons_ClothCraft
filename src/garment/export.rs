@@ -83,6 +83,37 @@ pub fn pattern_svg(template: &GarmentTemplate) -> String {
                 }
                 write!(out,"\" fill=\"none\" stroke=\"#eab1de\" stroke-dasharray=\"5 3\"><title>{}</title></polyline>",xml(&line.id)).unwrap();
             }
+            // Manufacturing draft: the joined cutting line and the sewing-line
+            // notch markers stay visible beside the sewing line in the editable
+            // preview.
+            if let Some(contour) = polygon.cutting_contour().ok().flatten() {
+                out.push_str("<path data-role=\"cutting-line\" fill-rule=\"evenodd\" d=\"");
+                for ring in std::iter::once(&contour.outer).chain(contour.holes.iter()) {
+                    for (k, p) in ring.iter().enumerate() {
+                        let p = pos(*p);
+                        write!(out, "{} {} {} ", if k == 0 { "M" } else { "L" }, p.x, p.y).unwrap();
+                    }
+                    out.push_str("Z ");
+                }
+                out.push_str("\" fill=\"none\" stroke=\"#e64a19\" stroke-width=\"1.5\" stroke-dasharray=\"6 3\"><title>Cutting line</title></path>");
+            }
+            for (edge, notches) in &polygon.notches {
+                for (i, notch) in notches.iter().enumerate() {
+                    if let Ok(marker) = polygon.notch_marker(edge, notch) {
+                        out.push_str("<polyline data-role=\"notch\" points=\"");
+                        for p in marker {
+                            let p = pos(p);
+                            write!(out, "{},{} ", p.x, p.y).unwrap();
+                        }
+                        write!(
+                            out,
+                            "\" fill=\"none\" stroke=\"#c62828\" stroke-width=\"1.5\"><title>notch {}</title></polyline>",
+                            i + 1
+                        )
+                        .unwrap();
+                    }
+                }
+            }
         }
         let centre = pos(DVec2::new(w, h) * 0.5);
         let angle = panel.grain_degrees.to_radians();
@@ -154,12 +185,14 @@ pub fn pattern_svg(template: &GarmentTemplate) -> String {
     out
 }
 
-/// Produce a physically dimensioned, untiled SVG of the *sewing outlines*.
+/// Produce a physically dimensioned, untiled SVG of the *sewing outlines* and
+/// any stored draft markings.
 ///
 /// Both the root SVG dimensions and its viewBox are in millimetres, so one
-/// user-space unit represents one millimetre at 100% print size. This is not a
-/// ready-to-cut pattern: seam allowances, page tiling and printer scaling are
-/// deliberately outside this export's scope.
+/// user-space unit represents one millimetre at 100% print size. When seam
+/// allowances are present, the joined cutting contour is included together with
+/// the sewing-line notch markers. This remains a single sheet: page tiling and
+/// printer scaling are deliberately outside this export's scope.
 pub fn print_pattern_svg(template: &GarmentTemplate) -> Result<String, String> {
     template.compile()?;
     print_pattern_svg_validated(template)
@@ -189,11 +222,35 @@ fn print_pattern_svg_validated(template: &GarmentTemplate) -> Result<String, Str
             ));
         }
         // Control handles may extend a valid curve beyond the declared corner
-        // bounds. Include the sampled contour so export never clips that bulge.
+        // bounds. Include the sampled contour, the joined cutting line and the
+        // notch markers so export never clips a valid marking.
         if let Some(polygon) = &panel.polygon {
             for point in polygon.outer_points()? {
                 min = min.min(point);
                 max = max.max(point);
+            }
+            if let Some(contour) = polygon.cutting_contour()? {
+                for ring in std::iter::once(&contour.outer).chain(contour.holes.iter()) {
+                    for point in ring {
+                        min = min.min(*point);
+                        max = max.max(*point);
+                    }
+                }
+            }
+            for (edge, notches) in &polygon.notches {
+                for notch in notches {
+                    for point in polygon.notch_marker(edge, notch)? {
+                        min = min.min(point);
+                        max = max.max(point);
+                    }
+                }
+            }
+            if !polygon.notches.is_empty() || !polygon.seam_allowances.is_empty() {
+                // Keep the 0.3 mm marking strokes inside the page even when a
+                // marker lies exactly on the computed extent.
+                let pad = DVec2::splat(0.0005);
+                min -= pad;
+                max += pad;
             }
         }
         let size = (max - min) * 1000.0;
@@ -216,7 +273,7 @@ fn print_pattern_svg_validated(template: &GarmentTemplate) -> Result<String, Str
     }
     height_mm += RULER_MM + MARGIN_MM;
     let mut out = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width_mm:.3}mm\" height=\"{height_mm:.3}mm\" viewBox=\"0 0 {width_mm:.3} {height_mm:.3}\"><title>{}</title><desc>Material-space sewing outlines at 1 SVG unit per mm. Print at 100% and check the 100 mm ruler. No seam allowances, page tiling or cutting certification.</desc><rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width_mm:.3}mm\" height=\"{height_mm:.3}mm\" viewBox=\"0 0 {width_mm:.3} {height_mm:.3}\"><title>{}</title><desc>Material-space sewing outlines and stored draft markings at 1 SVG unit per mm. Print at 100% and check the 100 mm ruler. Single sheet; no page tiling or cutting certification.</desc><rect width=\"100%\" height=\"100%\" fill=\"white\"/>\n",
         xml(&template.name)
     );
     let mut y = MARGIN_MM;
@@ -275,6 +332,37 @@ fn print_pattern_svg_validated(template: &GarmentTemplate) -> Result<String, Str
             "\" fill=\"none\" stroke=\"black\" stroke-width=\"0.3\" fill-rule=\"evenodd\"/>\n",
         );
         if let Some(polygon) = &panel.polygon {
+            if let Some(contour) = polygon.cutting_contour()? {
+                write!(
+                    out,
+                    "<path data-role=\"cutting-contour\" fill-rule=\"evenodd\" d=\""
+                )
+                .unwrap();
+                for ring in std::iter::once(&contour.outer).chain(contour.holes.iter()) {
+                    for (j, p) in ring.iter().enumerate() {
+                        write!(
+                            out,
+                            "{} {:.3} {:.3} ",
+                            if j == 0 { "M" } else { "L" },
+                            p.x * 1000.0,
+                            p.y * 1000.0
+                        )
+                        .unwrap();
+                    }
+                    out.push_str("Z ");
+                }
+                out.push_str("\" fill=\"none\" stroke=\"#c62828\" stroke-width=\"0.35\" stroke-dasharray=\"3 2\"/>\n");
+            }
+            for (edge, notches) in &polygon.notches {
+                for (i, notch) in notches.iter().enumerate() {
+                    let marker = polygon.notch_marker(edge, notch)?;
+                    write!(out, "<polyline data-role=\"notch\" points=\"").unwrap();
+                    for p in marker {
+                        write!(out, "{:.3},{:.3} ", p.x * 1000.0, p.y * 1000.0).unwrap();
+                    }
+                    writeln!(out,"\" fill=\"none\" stroke=\"#c62828\" stroke-width=\"0.3\"><title>notch {} · {}</title></polyline>",i + 1,xml(edge)).unwrap();
+                }
+            }
             for line in &polygon.lines {
                 write!(out, "<polyline data-role=\"internal-line\" points=\"").unwrap();
                 for p in line.samples()? {

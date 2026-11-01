@@ -20,7 +20,8 @@ fn root_units_match_material_metres_and_include_100mm_ruler() {
     assert!(svg.contains("data-role=\"calibration-ruler\""));
     assert!(svg.contains("h 100.000"));
     assert!(svg.contains("100 mm calibration ruler"));
-    assert!(svg.contains("No seam allowances, page tiling"));
+    assert!(svg.contains("stored draft markings"));
+    assert!(svg.contains("Single sheet; no page tiling"));
     // The legacy annotated preview remains independent and visibly unscaled.
     assert!(export::pattern_svg(&template).contains("not a print-to-scale sewing pattern"));
 }
