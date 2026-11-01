@@ -1157,7 +1157,7 @@ impl Atelier {
             None
         };
         self.authoring.tool = tool;
-        self.authoring.measure = Default::default();
+        self.authoring.measure.cancel_incomplete();
         if tool == Tool::Inspect && self.prefs.workspace.mode == super::layout::ViewMode::Patterns {
             self.prefs.workspace.mode = super::layout::ViewMode::Split;
         }
@@ -1341,6 +1341,7 @@ impl Atelier {
             return;
         };
         ui.label(&panel.name);
+        self.measurement_properties(ui, &panel);
         self.pin_properties(ui, &panel);
         if let Some(fabric) = self
             .project
@@ -3107,6 +3108,63 @@ mod transition_tests {
                 polygon.notches.get("hem").map(Vec::len).unwrap_or(0),
                 expected_notches
             );
+            assert_retained(&state, &retained_mesh);
+        }
+        let measurement = marvelous_cloth::garment::polygon::PatternMeasurement {
+            id: "hem_span".into(),
+            label: "Hem span".into(),
+            a: marvelous_cloth::garment::polygon::MeasurementAnchor {
+                edge: "hem".into(),
+                t: 0.2,
+            },
+            b: marvelous_cloth::garment::polygon::MeasurementAnchor {
+                edge: "hem".into(),
+                t: 0.7,
+            },
+        };
+        let mut renamed = measurement.clone();
+        renamed.label = "Finished hem".into();
+        for command in [
+            Command::SetMeasurement {
+                panel: panel.clone(),
+                measurement,
+            },
+            Command::SetMeasurement {
+                panel: panel.clone(),
+                measurement: renamed,
+            },
+            Command::RemoveMeasurement {
+                panel: panel.clone(),
+                id: "hem_span".into(),
+            },
+        ] {
+            let edit = authoring::apply(&state.project.template, command).unwrap();
+            assert!(!edit.reset_simulation);
+            state
+                .authoring
+                .history
+                .record(state.project.template.clone());
+            state.install(edit);
+            assert_retained(&state, &retained_mesh);
+            assert!(
+                super::super::current_worker_result(
+                    Some(super::super::worker::Done {
+                        generation: 12,
+                        had_grab: false,
+                        result: Err("test response".into()),
+                    }),
+                    *state.generation
+                )
+                .is_some()
+            );
+        }
+        for redo in [false, false, false, true, true, true] {
+            let edit = state
+                .authoring
+                .history
+                .restore(&state.project.template, redo)
+                .unwrap();
+            state.install(edit);
             assert_retained(&state, &retained_mesh);
         }
         assert_eq!(

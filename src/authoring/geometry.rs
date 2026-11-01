@@ -193,9 +193,10 @@ pub(super) fn boolean(
                     || !p.target_lengths.is_empty()
                     || !p.seam_allowances.is_empty()
                     || !p.notches.is_empty()
+                    || !p.measurements.is_empty()
             })
         {
-            return Err("Boolean operands must have no seams, pins, internal lines, target lengths, seam allowances or notches; clear those relations first".into());
+            return Err("Boolean operands must have no seams, pins, internal lines, target lengths, seam allowances, notches or measurements; clear those relations first".into());
         }
     }
     let original = t.panels[ai].clone();

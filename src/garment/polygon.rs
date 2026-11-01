@@ -64,6 +64,9 @@ pub struct PolygonPattern {
     /// sampled arclength. Draft data only, like `seam_allowances`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub notches: BTreeMap<String, Vec<Notch>>,
+    /// Saved, editable rest-space distances. Empty metadata preserves legacy JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub measurements: Vec<PatternMeasurement>,
 }
 /// Tolerant reader for stored targets. A hand-edited file can hold `null` (what a
 /// non-finite float serialises to) or another unusable value. Those become `NaN`
@@ -184,6 +187,51 @@ impl PolygonPattern {
             return Err("Measurement distance is not finite".into());
         }
         Ok(length)
+    }
+
+    /// Project a material point onto one named sampled boundary. Used by ruler
+    /// picking and split migration; the returned distance is in metres.
+    pub fn measurement_anchor_at_point(
+        &self,
+        edge: &str,
+        point: DVec2,
+    ) -> Result<(MeasurementAnchor, f64), String> {
+        if !point.is_finite() {
+            return Err("Measurement point must be finite".into());
+        }
+        self.measurement_anchor_position(&MeasurementAnchor {
+            edge: edge.into(),
+            t: 0.,
+        })?;
+        let points = self
+            .named_boundary(edge)
+            .ok_or("Measurement boundary missing")?;
+        let total: f64 = points.windows(2).map(|p| p[0].distance(p[1])).sum();
+        let mut walked = 0.;
+        let mut best = (f64::INFINITY, 0.);
+        for pair in points.windows(2) {
+            let delta = pair[1] - pair[0];
+            let length = delta.length();
+            if length == 0. {
+                continue;
+            }
+            let along = ((point - pair[0]).dot(delta / length)).clamp(0., length);
+            let distance = point.distance(pair[0] + delta / length * along);
+            if distance < best.0 {
+                best = (distance, (walked + along) / total);
+            }
+            walked += length;
+        }
+        if !best.0.is_finite() {
+            return Err("Measurement projection has no finite result".into());
+        }
+        Ok((
+            MeasurementAnchor {
+                edge: edge.into(),
+                t: best.1.clamp(0., 1.),
+            },
+            best.0,
+        ))
     }
 
     /// Validate a bounded collection before accepting a transaction or document.
@@ -323,6 +371,7 @@ impl PolygonPattern {
             return Err("Invalid Bézier edge name or control point".into());
         }
         self.validate_markings()?;
+        self.validate_measurement_records(&self.measurements)?;
         let mut points = vec![];
         let mut segments = vec![];
         let mut owners = vec![];
